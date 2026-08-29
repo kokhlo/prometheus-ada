@@ -1,0 +1,17 @@
+with "prometheus_ada.gpr";
+
+project Prometheus_Ada_Tests is
+   for Source_Dirs use ("test");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+   for Main use ("prometheus-tests.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use ("-gnatwa", "-O2");
+   end Compiler;
+
+   package Binder is
+      for Default_Switches ("Ada") use ("-Es");
+   end Binder;
+end Prometheus_Ada_Tests;

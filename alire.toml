@@ -1,0 +1,12 @@
+name = "prometheus_ada"
+description = "Prometheus text-format metrics client library for Ada"
+version = "0.1.0-dev"
+
+authors = ["Konstantin Khlopkov"]
+maintainers = ["Konstantin Khlopkov <konstantin.khlopkov93@gmail.com>"]
+maintainers-logins = ["kokhlo"]
+licenses = "MIT"
+
+tags = ["prometheus", "metrics", "observability"]
+
+project-files = ["prometheus_ada.gpr"]
