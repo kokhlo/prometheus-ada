@@ -1,5 +1,6 @@
 # prometheus-ada
 
+[![CI](https://github.com/kokhlo/prometheus-ada/actions/workflows/build-test.yml/badge.svg)](https://github.com/kokhlo/prometheus-ada/actions/workflows/build-test.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Prometheus text-format metrics client library for Ada. Zero dependencies, text exposition only (v0.0.4).
@@ -19,6 +20,18 @@ Observability-ready services need metrics. This library provides:
 **Text-format client only** — no HTTP server, no OpenMetrics. This is the foundation; an HTTP endpoint will be layered on top (via a simple TCP listener or integration with an Ada web framework).
 
 As of 2026-08-29, `alr search prometheus` returns zero hits. This is the first Prometheus client library published for Ada.
+
+## Installation
+
+With [Alire](https://alire.ada.dev):
+
+```bash
+alr with prometheus
+```
+
+> **Note:** `prometheus` is available after the alire-index merge
+> ([PR](https://github.com/alire-project/alire-index/pull/2099)). Until then, use the repository directly:
+> `alr with --use /path/to/prometheus-ada`
 
 ## Usage
 
