@@ -1,4 +1,4 @@
-with "prometheus_ada.gpr";
+with "prometheus.gpr";
 
 project Prometheus_Ada_Tests is
    for Source_Dirs use ("test");
