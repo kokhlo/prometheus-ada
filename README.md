@@ -1,5 +1,7 @@
 # prometheus-ada
 
+[![CI](https://github.com/kokhlo/prometheus-ada/actions/workflows/build-test.yml/badge.svg)](https://github.com/kokhlo/prometheus-ada/actions/workflows/build-test.yml)
+[![alire](https://img.shields.io/endpoint?url=https://alire.ada.dev/badges/prometheus.json)](https://alire.ada.dev/crates/prometheus.html)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Prometheus text-format metrics client library for Ada. Zero dependencies, text exposition only (v0.0.4).
@@ -18,7 +20,11 @@ Observability-ready services need metrics. This library provides:
 
 **Text-format client only** — no HTTP server, no OpenMetrics. This is the foundation; an HTTP endpoint will be layered on top (via a simple TCP listener or integration with an Ada web framework).
 
-As of 2026-08-29, `alr search prometheus` returns zero hits. This is the first Prometheus client library published for Ada.
+Available in the Alire index — the first Prometheus client library published for Ada:
+
+```bash
+alr with prometheus
+```
 
 ## Usage
 
@@ -65,7 +71,7 @@ Output : constant String := Collect (Reg);
 --  Returns Prometheus text format v0.0.4:
 --  # HELP http_requests_total Total HTTP requests
 --  # TYPE http_requests_total counter
---  http_requests_total{method="GET"} 1.01000E+02
+--  http_requests_total{method="GET"} 101
 ```
 
 ## Design
@@ -79,11 +85,13 @@ Metric types (`Counter_Type`, `Gauge_Type`, `Histogram_Type`) are **limited** re
 
 ### Labels
 
-Label sets are vectors of `(name, value)` pairs. The exposition formatter sorts them by name for determinism (Prometheus requires unique `{metric, labels}` combinations, and sorting makes collisions obvious).
+Label sets are vectors of `(name, value)` pairs. Registration validates each label name (`[a-zA-Z_][a-zA-Z0-9_]*`, ASCII only) and rejects duplicates; the set is sorted by name so exposition output is deterministic.
 
 ### Float formatting
 
-Ada's `Float'Image` outputs scientific notation (`1.02700E+03`). Prometheus accepts this (it's valid per the spec), and it's more compact than decimal for large/small values. If you need decimal-only output, replace `Format_Float` in `prometheus.adb`.
+Values are rendered as plain decimals (`1027`, `0.05`, `-0.15`) rather than
+Ada's native scientific notation (`1.02700E+03`). Non-finite values use the
+spec tokens `NaN`, `+Inf`, `-Inf`.
 
 ## Roadmap
 
@@ -92,8 +100,8 @@ Ada's `Float'Image` outputs scientific notation (`1.02700E+03`). Prometheus acce
 - [x] Label escaping (backslash, quote, newline)
 - [x] HELP escaping
 - [x] Validation (metric/label name format)
-- [x] Tests (27 checks, all PASS)
-- [ ] Publish to alire-index at github.com/kokhlo/prometheus-ada
+- [x] Tests (74 checks, all PASS)
+- [x] Publish to alire-index (`alr with prometheus`)
 - [ ] HTTP server integration (simple TCP listener)
 - [ ] OpenMetrics format (for native histograms, exemplars)
 - [ ] Push gateway client (for batch jobs)
@@ -101,11 +109,11 @@ Ada's `Float'Image` outputs scientific notation (`1.02700E+03`). Prometheus acce
 ## Testing
 
 ```bash
-gprbuild -p -P prometheus_ada_tests.gpr
+gprbuild -p -P prometheus_tests.gpr
 ./bin/prometheus-tests
 ```
 
-Expected: `All tests passed!` (27 checks).
+Expected: `All tests passed!` (74 checks).
 
 ## License
 

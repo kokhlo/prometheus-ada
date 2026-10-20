@@ -16,8 +16,11 @@ package body Prometheus is
 
    procedure Inc (Self : in out Counter_Type; Amount : Float := 1.0) is
    begin
-      if Amount < 0.0 then
-         raise Constraint_Error with "Counter increment must be non-negative";
+      --  NaN must be rejected explicitly: every comparison with NaN is
+      --  False, so "Amount < 0.0" alone would let it through and poison
+      --  the counter forever (counters must stay monotonic).
+      if Amount < 0.0 or else Amount /= Amount then
+         raise Constraint_Error with "Counter increment must be a non-negative number";
       end if;
       Self.Val := Self.Val + Amount;
    end Inc;
@@ -64,7 +67,13 @@ package body Prometheus is
          declare
             B : Bucket := Self.Buckets_Vec.Element (I);
          begin
-            if Val <= B.Upper_Bound then
+            --  A bucket with Upper_Bound = Float'Last is the le="+Inf"
+            --  bucket; it is inclusive of an actual +Inf observation
+            --  (Val > Float'Last), which every "Val <= bound" test would
+            --  otherwise miss.
+            if Val <= B.Upper_Bound
+              or else (B.Upper_Bound = Float'Last and then Val > Float'Last)
+            then
                B.Count := B.Count + 1;
                Self.Buckets_Vec.Replace_Element (I, B);
             end if;
@@ -96,6 +105,54 @@ package body Prometheus is
    -- Registry_Type
    -------------------
 
+   --  Validate every label name and sort the set by name.  The text
+   --  format spec requires deterministic label order within a metric;
+   --  sorted-by-name also makes duplicate label names adjacent so the
+   --  uniqueness check can catch them.
+   procedure Prepare_Labels (Labels : in out Label_Set) is
+
+      function Less (X, Y : Label) return Boolean is
+        (To_String (X.Name) < To_String (Y.Name));
+
+      package Label_Sorting is new Label_Vectors.Generic_Sorting (Less);
+
+   begin
+      for L of Labels loop
+         if not Is_Valid_Label_Name (To_String (L.Name)) then
+            raise Constraint_Error
+              with "Invalid label name: " & To_String (L.Name);
+         end if;
+      end loop;
+
+      for I in Labels.First_Index .. Labels.Last_Index - 1 loop
+         for J in I + 1 .. Labels.Last_Index loop
+            if To_String (Labels.Element (I).Name)
+              = To_String (Labels.Element (J).Name)
+            then
+               raise Constraint_Error
+                 with "Duplicate label name: " & To_String (Labels.Element (I).Name);
+            end if;
+         end loop;
+      end loop;
+
+      Label_Sorting.Sort (Labels);
+   end Prepare_Labels;
+
+   --  Sort buckets by upper bound, ascending.  The text format requires
+   --  le values to appear in increasing order; the +Inf bucket
+   --  (Float'Last) naturally sorts last.  A user-supplied +Inf is mapped
+   --  to Float'Last so it shares the sentinel.
+   procedure Sort_Buckets (Buckets : in out Bucket_Vectors.Vector) is
+
+      function Less (X, Y : Bucket) return Boolean is
+        (X.Upper_Bound < Y.Upper_Bound);
+
+      package Bucket_Sorting is new Bucket_Vectors.Generic_Sorting (Less);
+
+   begin
+      Bucket_Sorting.Sort (Buckets);
+   end Sort_Buckets;
+
    function Register_Counter
      (Self   : in out Registry_Type;
       Name   : String;
@@ -103,12 +160,15 @@ package body Prometheus is
       Labels : Label_Set := Label_Vectors.Empty_Vector)
       return Counter_Access
    is
-      UName : constant Unbounded_String := To_Unbounded_String (Name);
-      Cnt   : Counter_Access;
+      UName  : constant Unbounded_String := To_Unbounded_String (Name);
+      Lbls   : Label_Set := Labels;
+      Cnt    : Counter_Access;
    begin
       if not Is_Valid_Metric_Name (Name) then
          raise Constraint_Error with "Invalid metric name: " & Name;
       end if;
+
+      Prepare_Labels (Lbls);
 
       --  Check for duplicate.
       for M of Self.Metrics loop
@@ -122,7 +182,7 @@ package body Prometheus is
         (Metric_Descriptor'(Kind      => Kind_Counter,
                             Name      => UName,
                             Help      => To_Unbounded_String (Help),
-                            Labels    => Labels,
+                            Labels    => Lbls,
                             Counter   => Cnt,
                             Gauge     => null,
                             Histogram => null));
@@ -138,11 +198,14 @@ package body Prometheus is
       return Gauge_Access
    is
       UName : constant Unbounded_String := To_Unbounded_String (Name);
+      Lbls  : Label_Set := Labels;
       G     : Gauge_Access;
    begin
       if not Is_Valid_Metric_Name (Name) then
          raise Constraint_Error with "Invalid metric name: " & Name;
       end if;
+
+      Prepare_Labels (Lbls);
 
       for M of Self.Metrics loop
          if M.Name = UName then
@@ -155,7 +218,7 @@ package body Prometheus is
         (Metric_Descriptor'(Kind      => Kind_Gauge,
                             Name      => UName,
                             Help      => To_Unbounded_String (Help),
-                            Labels    => Labels,
+                            Labels    => Lbls,
                             Counter   => null,
                             Gauge     => G,
                             Histogram => null));
@@ -172,12 +235,15 @@ package body Prometheus is
       return Histogram_Access
    is
       UName       : constant Unbounded_String := To_Unbounded_String (Name);
+      Lbls        : Label_Set := Labels;
       H           : Histogram_Access;
       Bucket_List : Bucket_Vectors.Vector;
    begin
       if not Is_Valid_Metric_Name (Name) then
          raise Constraint_Error with "Invalid metric name: " & Name;
       end if;
+
+      Prepare_Labels (Lbls);
 
       for M of Self.Metrics loop
          if M.Name = UName then
@@ -197,7 +263,11 @@ package body Prometheus is
                UB_Str : constant String := To_String (L.Value);
                UB     : Float;
             begin
-               if UB_Str = "+Inf" then
+               if UB_Str = "+Inf" or else UB_Str = "Inf" or else UB_Str = "-Inf" then
+                  if UB_Str = "-Inf" then
+                     raise Constraint_Error
+                       with "Invalid bucket bound: " & UB_Str;
+                  end if;
                   UB := Float'Last;
                else
                   UB := Float'Value (UB_Str);
@@ -207,6 +277,8 @@ package body Prometheus is
          end loop;
       end if;
 
+      Sort_Buckets (Bucket_List);
+
       H := new Histogram_Type;
       H.Buckets_Vec := Bucket_List;
 
@@ -214,7 +286,7 @@ package body Prometheus is
         (Metric_Descriptor'(Kind      => Kind_Histogram,
                             Name      => UName,
                             Help      => To_Unbounded_String (Help),
-                            Labels    => Labels,
+                            Labels    => Lbls,
                             Counter   => null,
                             Gauge     => null,
                             Histogram => H));
@@ -269,37 +341,66 @@ package body Prometheus is
       end Trim_Zeros;
 
       function Format_Float (Val : Float) return String is
-         S : constant String := Float'Image (Val);
-         T : constant String := (if S'Length > 0 and then S (S'First) = ' '
-                                 then S (S'First + 1 .. S'Last)
-                                 else S);
-         E : constant Integer := Index (T, "E");
       begin
-         --  Exponent form (e.g. 5.00000E-02) is valid for scrapers but ugly and
-         --  unlike every other client; render plain decimal where possible.
-         if E = 0 then
-            return T;
+         --  Non-finite values have dedicated tokens in the text format.
+         --  Float'Image renders them as "+Inf****"-style padded strings,
+         --  so they must be handled before any decimal surgery.
+         if Val /= Val then
+            return "NaN";
+         elsif Val > Float'Last then
+            return "+Inf";
+         elsif Val < -Float'Last then
+            return "-Inf";
          end if;
+
          declare
-            Mantissa : constant String := T (T'First .. E - 1);
-            Exp      : constant Integer := Integer'Value (T (E + 1 .. T'Last));
-            Dg       : constant String := Mantissa (Mantissa'First .. Index (Mantissa, ".") - 1)
-                                       & Mantissa (Index (Mantissa, ".") + 1 .. Mantissa'Last);
-            Point    : constant Integer := Index (Mantissa, ".") - Mantissa'First; -- digits before point
+            S : constant String := Float'Image (Val);
+            T : constant String := (if S (S'First) = ' '
+                                    then S (S'First + 1 .. S'Last)
+                                    else S);
+            E : constant Integer := Index (T, "E");
          begin
-            if Exp < 0 and then -Exp < Point then
-               --  Shift the point left: 0.05 style
-               return Trim_Zeros ("0." & (-Exp - Point - 1) * '0' & Dg);
-            elsif Exp < 0 then
-               return Trim_Zeros ("0." & ((-Exp) - 1) * '0' & Dg);
-            else
-               if Point + Exp >= Dg'Length then
-                  return Trim_Zeros (Dg & (Point + Exp - Dg'Length) * '0');
-               else
-                  return Trim_Zeros (Dg (Dg'First .. Dg'First + Point + Exp - 1) & "."
-                    & Dg (Dg'First + Point + Exp .. Dg'Last));
-               end if;
+            --  Exponent form (e.g. 5.00000E-02) is valid for scrapers but
+            --  ugly and unlike every other client; render plain decimal.
+            if E = 0 then
+               return Trim_Zeros (T);
             end if;
+
+            declare
+               Neg      : constant Boolean := T (T'First) = '-';
+               Mantissa : constant String :=
+                 (if Neg then T (T'First + 1 .. E - 1) else T (T'First .. E - 1));
+               Exp      : constant Integer := Integer'Value (T (E + 1 .. T'Last));
+               Dot      : constant Integer := Index (Mantissa, ".");
+               Dg       : constant String :=
+                 (if Dot = 0 then Mantissa
+                  else Mantissa (Mantissa'First .. Dot - 1)
+                    & Mantissa (Dot + 1 .. Mantissa'Last));
+               Point    : constant Integer :=
+                 (if Dot = 0 then Mantissa'Length else Dot - Mantissa'First);
+               NewP     : constant Integer := Point + Exp;
+               --  Digits before the decimal point after applying Exp.
+               Sign     : constant String := (if Neg then "-" else "");
+            begin
+               --  Out-of-range exponents (not producible by Float'Image,
+               --  guard for other Float types) stay in valid E-notation.
+               if Exp > 99 or else Exp < -99 then
+                  return T;
+               end if;
+
+               if NewP <= 0 then
+                  --  Shift the point left: 5.0E-2 -> 0.05
+                  return Sign & Trim_Zeros ("0." & (-NewP) * '0' & Dg);
+               elsif NewP >= Dg'Length then
+                  --  Shift the point right past all digits: 1.0E6 -> 1000000
+                  return Sign & Dg & (NewP - Dg'Length) * '0';
+               else
+                  --  Point lands inside the digit string: 1.5E0 -> 1.5
+                  return Sign
+                    & Trim_Zeros (Dg (Dg'First .. Dg'First + NewP - 1) & "."
+                                    & Dg (Dg'First + NewP .. Dg'Last));
+               end if;
+            end;
          end;
       end Format_Float;
 
@@ -350,20 +451,36 @@ package body Prometheus is
       return To_String (Result);
    end Collect;
 
+   --  ASCII-only membership tests for name validation.  Do not replace
+   --  with Ada.Characters.Handling: its Is_Letter/Is_Alphanumeric accept
+   --  all of Latin-1 (e.g. 'É', 'ñ'), which the text format forbids.
+   function Is_ASCII_Letter (C : Character) return Boolean is
+     (C in 'A' .. 'Z' | 'a' .. 'z');
+
+   function Is_ASCII_Digit (C : Character) return Boolean is
+     (C in '0' .. '9');
+
    function Is_Valid_Metric_Name (Name : String) return Boolean is
    begin
       if Name'Length = 0 then
          return False;
       end if;
 
-      --  First char: [a-zA-Z_:]
-      if not (Is_Letter (Name (Name'First)) or else Name (Name'First) in '_' | ':') then
+      --  First char: [a-zA-Z_:].  Deliberately ASCII-only membership
+      --  tests (Ada.Characters.Handling.Is_Letter accepts all Latin-1
+      --  letters, e.g. 'É', which are invalid in metric names).
+      if not (Is_ASCII_Letter (Name (Name'First))
+                or else Name (Name'First) = '_' or else Name (Name'First) = ':')
+      then
          return False;
       end if;
 
       --  Remaining: [a-zA-Z0-9_:]
       for I in Name'First + 1 .. Name'Last loop
-         if not (Is_Alphanumeric (Name (I)) or else Name (I) in '_' | ':') then
+         if not (Is_ASCII_Letter (Name (I))
+                   or else Is_ASCII_Digit (Name (I))
+                   or else Name (I) = '_' or else Name (I) = ':')
+         then
             return False;
          end if;
       end loop;
@@ -378,13 +495,18 @@ package body Prometheus is
       end if;
 
       --  First char: [a-zA-Z_]
-      if not (Is_Letter (Name (Name'First)) or else Name (Name'First) = '_') then
+      if not (Is_ASCII_Letter (Name (Name'First))
+                or else Name (Name'First) = '_')
+      then
          return False;
       end if;
 
       --  Remaining: [a-zA-Z0-9_]
       for I in Name'First + 1 .. Name'Last loop
-         if not (Is_Alphanumeric (Name (I)) or else Name (I) = '_') then
+         if not (Is_ASCII_Letter (Name (I))
+                   or else Is_ASCII_Digit (Name (I))
+                   or else Name (I) = '_')
+         then
             return False;
          end if;
       end loop;

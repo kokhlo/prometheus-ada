@@ -2,7 +2,7 @@
 #ifndef PROMETHEUS_CONFIG_H
 #define PROMETHEUS_CONFIG_H
 
-#define CRATE_VERSION "0.2.0"
+#define CRATE_VERSION "0.3.0"
 #define CRATE_NAME "prometheus"
 
 #define ALIRE_HOST_OS "macos"

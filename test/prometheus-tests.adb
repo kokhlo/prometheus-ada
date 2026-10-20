@@ -29,6 +29,15 @@
 --   25. Label name validation: remaining chars [a-zA-Z0-9_].
 --   26. Histogram sum accumulates observed values.
 --   27. Multiple histogram observations.
+--   28. Negative values render with a leading minus (no '0.-15' garbage).
+--   29. NaN / +Inf / -Inf render as their spec tokens.
+--   30. Counter Inc rejects NaN.
+--   31. Label values are emitted sorted by name.
+--   32. Invalid label names rejected at registration.
+--   33. Duplicate label names rejected at registration.
+--   34. Non-ASCII (Latin-1) letters rejected in metric/label names.
+--   35. Custom (unsorted) buckets are sorted ascending in exposition.
+--   36. +Inf observation lands in the +Inf bucket.
 
 with Ada.Text_IO;         use Ada.Text_IO;
 with Ada.Command_Line;
@@ -77,9 +86,9 @@ procedure Prometheus.Tests is
               "Counter: HELP line present");
       Assert (Index (To_String (Output), "# TYPE http_requests_total counter") > 0,
               "Counter: TYPE counter");
-      Assert (Index (To_String (Output), "http_requests_total{method=""post"",code=""200""} 1027") > 0 or
-              Index (To_String (Output), "http_requests_total{method=""post"",code=""200""} 1.027") > 0,
-              "Counter: exposition line with labels and value 1027");
+      --  Labels are emitted sorted by name (see README): code < method.
+      Assert (Index (To_String (Output), "http_requests_total{code=""200"",method=""post""} 1027") > 0,
+              "Counter: exposition line with labels (sorted) and value 1027");
    end Test_Counter_Exposition;
 
    --  Test 2: Gauge inc/dec/set.
@@ -399,6 +408,158 @@ procedure Prometheus.Tests is
       Assert (Index (To_String (Output), "instance=""i-123""") > 0, "Multiple labels: instance present");
    end Test_Multiple_Labels;
 
+   --  Runtime construction of non-finite floats (static 1.0/0.0 is a
+   --  compile-time error, and Float'Value rejects "+Inf").
+   function Mk (A, B : Float) return Float is (A / B);
+   Inf_Val  : constant Float := Mk (1.0, 0.0);
+   NInf_Val : constant Float := Mk (-1.0, 0.0);
+   NaN_Val  : constant Float := Mk (0.0, 0.0);
+
+   --  Test 28: Negative values keep the minus sign through Format_Float.
+   procedure Test_Negative_Value_Rendering is
+      Reg  : Registry_Type;
+      G    : access Gauge_Type;
+      Outp : Unbounded_String;
+   begin
+      G := Register_Gauge (Reg, "neg_gauge", "Negative gauge test.", Label_Vectors.Empty_Vector);
+      Set (G.all, -0.15);
+      Outp := To_Unbounded_String (Collect (Reg));
+      Assert (Index (To_String (Outp), "neg_gauge -0.15") > 0,
+              "Negative rendering: -0.15 (not 0.-150000)");
+   end Test_Negative_Value_Rendering;
+
+   --  Test 29: NaN / +Inf / -Inf use spec tokens, no asterisks.
+   procedure Test_Special_Value_Tokens is
+      Reg  : Registry_Type;
+      G    : access Gauge_Type;
+      Outp : Unbounded_String;
+   begin
+      G := Register_Gauge (Reg, "inf_gauge", "Inf test.", Label_Vectors.Empty_Vector);
+      Set (G.all, Inf_Val);
+      Outp := To_Unbounded_String (Collect (Reg));
+      Assert (Index (To_String (Outp), "inf_gauge +Inf") > 0,
+              "Special values: +Inf token");
+
+      Set (G.all, NInf_Val);
+      Outp := To_Unbounded_String (Collect (Reg));
+      Assert (Index (To_String (Outp), "inf_gauge -Inf") > 0,
+              "Special values: -Inf token (sign preserved)");
+
+      Set (G.all, NaN_Val);
+      Outp := To_Unbounded_String (Collect (Reg));
+      Assert (Index (To_String (Outp), "inf_gauge NaN") > 0,
+              "Special values: NaN token");
+   end Test_Special_Value_Tokens;
+
+   --  Test 30: Counter Inc rejects NaN.
+   procedure Test_Counter_NaN_Inc is
+      Reg    : Registry_Type;
+      Cnt    : access Counter_Type;
+      Raised : Boolean := False;
+   begin
+      Cnt := Register_Counter (Reg, "nan_inc_test", "Test.", Label_Vectors.Empty_Vector);
+      begin
+         Inc (Cnt.all, NaN_Val);
+      exception
+         when Constraint_Error =>
+            Raised := True;
+      end;
+      Assert (Raised, "Counter: NaN inc rejected");
+      Assert (Value (Cnt.all) = 0.0, "Counter: value unchanged after rejected NaN inc");
+   end Test_Counter_NaN_Inc;
+
+   --  Test 31: Label values are emitted sorted by name.
+   --  Test 32: Invalid label names rejected at registration.
+   --  Test 33: Duplicate label names rejected at registration.
+   procedure Test_Label_Registration_Rules is
+      Reg      : Registry_Type;
+      Cnt      : access Counter_Type;
+      Labels   : Label_Set;
+      Outp     : Unbounded_String;
+      Raised   : Boolean := False;
+   begin
+      --  Sorted order: zeta < alpha -> alpha must come first.
+      Labels.Append (Label'(Name => To_Unbounded_String ("zeta"), Value => To_Unbounded_String ("1")));
+      Labels.Append (Label'(Name => To_Unbounded_String ("alpha"), Value => To_Unbounded_String ("2")));
+      Cnt := Register_Counter (Reg, "sorted_labels", "Test.", Labels);
+      Inc (Cnt.all);
+      Outp := To_Unbounded_String (Collect (Reg));
+      Assert (Index (To_String (Outp), "{alpha=""2"",zeta=""1""}") > 0,
+              "Label sort: emitted sorted by name");
+
+      --  Invalid label name rejected.
+      Labels.Clear;
+      Labels.Append (Label'(Name => To_Unbounded_String ("bad-name"), Value => To_Unbounded_String ("x")));
+      begin
+         Cnt := Register_Counter (Reg, "bad_label_name", "Test.", Labels);
+      exception
+         when Constraint_Error =>
+            Raised := True;
+      end;
+      Assert (Raised, "Label registration: invalid label name rejected");
+
+      --  Duplicate label name rejected.
+      Raised := False;
+      Labels.Clear;
+      Labels.Append (Label'(Name => To_Unbounded_String ("dup"), Value => To_Unbounded_String ("1")));
+      Labels.Append (Label'(Name => To_Unbounded_String ("dup"), Value => To_Unbounded_String ("2")));
+      begin
+         Cnt := Register_Counter (Reg, "dup_label_name", "Test.", Labels);
+      exception
+         when Constraint_Error =>
+            Raised := True;
+      end;
+      Assert (Raised, "Label registration: duplicate label name rejected");
+   end Test_Label_Registration_Rules;
+
+   --  Test 34: Non-ASCII (Latin-1) letters rejected in metric/label names.
+   procedure Test_Non_Ascii_Names_Rejected is
+   begin
+      Assert (not Is_Valid_Metric_Name ("métrique"), "Non-ASCII: Latin-1 letter in metric name rejected");
+      Assert (not Is_Valid_Label_Name ("cañon"), "Non-ASCII: Latin-1 letter in label name rejected");
+      Assert (not Is_Valid_Label_Name ("Étape"), "Non-ASCII: Latin-1 uppercase rejected");
+   end Test_Non_Ascii_Names_Rejected;
+
+   --  Test 35: Custom (unsorted) buckets are sorted ascending in exposition.
+   procedure Test_Custom_Buckets_Sorted is
+      Reg      : Registry_Type;
+      Hist     : access Histogram_Type;
+      Buckets  : Label_Vectors.Vector;
+      Outp     : Unbounded_String;
+   begin
+      Buckets.Append (Label'(Name => To_Unbounded_String (""), Value => To_Unbounded_String ("5.0")));
+      Buckets.Append (Label'(Name => To_Unbounded_String (""), Value => To_Unbounded_String ("1.0")));
+      Buckets.Append (Label'(Name => To_Unbounded_String (""), Value => To_Unbounded_String ("+Inf")));
+      Hist := Register_Histogram (Reg, "custom_hist", "Unsorted buckets.", Label_Vectors.Empty_Vector, Buckets);
+      Observe (Hist.all, 3.0);
+
+      Outp := To_Unbounded_String (Collect (Reg));
+      declare
+         P1 : constant Integer := Index (To_String (Outp), "le=""1""");
+         P5 : constant Integer := Index (To_String (Outp), "le=""5""");
+         PI : constant Integer := Index (To_String (Outp), "le=""+Inf""");
+      begin
+         Assert (P1 > 0 and P5 > 0 and PI > 0, "Custom buckets: all present");
+         Assert (P1 < P5 and P5 < PI, "Custom buckets: sorted ascending in output");
+      end;
+   end Test_Custom_Buckets_Sorted;
+
+   --  Test 36: +Inf observation lands in the +Inf bucket.
+   procedure Test_Observe_Inf_In_Upper_Bucket is
+      Reg     : Registry_Type;
+      Hist    : access Histogram_Type;
+      Buckets : Label_Vectors.Vector;
+   begin
+      Buckets.Append (Label'(Name => To_Unbounded_String (""), Value => To_Unbounded_String ("1.0")));
+      Buckets.Append (Label'(Name => To_Unbounded_String (""), Value => To_Unbounded_String ("+Inf")));
+      Hist := Register_Histogram (Reg, "inf_obs_hist", "Test.", Label_Vectors.Empty_Vector, Buckets);
+
+      Observe (Hist.all, Inf_Val);
+      Assert (Bucket_Count (Hist.all, Float'Last) = 1,
+              "Observe +Inf: lands in +Inf bucket");
+      Assert (Count (Hist.all) = 1, "Observe +Inf: counted");
+   end Test_Observe_Inf_In_Upper_Bucket;
+
 begin
    Put_Line ("=== Prometheus-Ada Test Suite ===");
    Put_Line ("");
@@ -423,6 +584,13 @@ begin
    Test_Label_Name_First_Char;
    Test_Label_Name_Remaining_Chars;
    Test_Multiple_Labels;
+   Test_Negative_Value_Rendering;
+   Test_Special_Value_Tokens;
+   Test_Counter_NaN_Inc;
+   Test_Label_Registration_Rules;
+   Test_Non_Ascii_Names_Rejected;
+   Test_Custom_Buckets_Sorted;
+   Test_Observe_Inf_In_Upper_Bucket;
 
    Put_Line ("");
    Put_Line ("=== Summary ===");

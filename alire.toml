@@ -1,6 +1,6 @@
 name = "prometheus"
 description = "Prometheus text-format metrics client library for Ada"
-version = "0.2.0"
+version = "0.3.0"
 
 authors = ["Konstantin Khlopkov"]
 maintainers = ["Konstantin Khlopkov <konstantin.khlopkov93@gmail.com>"]
