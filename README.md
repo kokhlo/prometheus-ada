@@ -1,10 +1,8 @@
 # prometheus-ada
 
 [![CI](https://github.com/kokhlo/prometheus-ada/actions/workflows/build-test.yml/badge.svg)](https://github.com/kokhlo/prometheus-ada/actions/workflows/build-test.yml)
-[![alire](https://img.shields.io/endpoint?url=https://alire.ada.dev/badges/prometheus.json)](https://alire.ada.dev/crates/prometheus.html)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Prometheus text-format metrics client library for Ada. Zero dependencies, text exposition only (v0.0.4).
+Prometheus metrics client library for Ada. Zero dependencies: counter, gauge, and histogram with labels, exposed in the Prometheus text format — the first Prometheus client published for Ada.
 
 ## What / Why
 
@@ -20,11 +18,30 @@ Observability-ready services need metrics. This library provides:
 
 **Text-format client only** — no HTTP server, no OpenMetrics. This is the foundation; an HTTP endpoint will be layered on top (via a simple TCP listener or integration with an Ada web framework).
 
-Available in the Alire index — the first Prometheus client library published for Ada:
+## Quick start
 
 ```bash
 alr with prometheus
 ```
+
+```ada
+with Prometheus; use Prometheus;
+
+procedure Quick_Start is
+   Reg  : Registry_Type;
+   Reqs : Counter_Access;
+begin
+   Reqs := Reg.Register_Counter ("http_requests_total",
+                                 "Total HTTP requests");
+   Inc (Reqs.all);
+
+   --  What a Prometheus server scrapes (/metrics):
+   Put_Line (Reg.Collect);
+end Quick_Start;
+```
+
+A complete runnable version (counter + histogram + printed exposition) is in
+[examples/metrics_demo.adb](examples/metrics_demo.adb).
 
 ## Usage
 
@@ -109,8 +126,11 @@ spec tokens `NaN`, `+Inf`, `-Inf`.
 ## Testing
 
 ```bash
-gprbuild -p -P prometheus_tests.gpr
-./bin/prometheus-tests
+alr build                              # library
+gprbuild -p -P prometheus_tests.gpr    # tests
+./bin/prometheus-tests                 # 74 checks
+gprbuild -p -P examples/prometheus_examples.gpr   # examples (not part of alr build)
+./bin/metrics_demo
 ```
 
 Expected: `All tests passed!` (74 checks).
